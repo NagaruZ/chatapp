@@ -278,6 +278,7 @@ int send_message(){
 	strcpy(req.src_username, login_username);
 	strcpy(req.dst_username, dst_username);
 	strcpy(req.message, message);
+    req.pid = getpid();
 	
 	/* write client info to server fifo */
 	if(write(fifo_fd, &req, sizeof(SEND_MESSAGE_REQUEST)) == -1){

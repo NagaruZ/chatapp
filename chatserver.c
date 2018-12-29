@@ -18,12 +18,6 @@
 #define DELIM "="
 #define PUBLIC_FIFO_NUM 3
 
-char public_fifo_name[PUBLIC_FIFO_NUM][100] = {
-	{"/home/zouyufan_2016200087/chatapp/data/chat_server_fifo_1"}, // handling register requests
-	{"/home/zouyufan_2016200087/chatapp/data/chat_server_fifo_2"}, // handling login requests
-	{"/home/zouyufan_2016200087/chatapp/data/chat_server_fifo_3"}  // handling messages
-};
-
 /* 服务端配置信息 */
 struct config
 {
@@ -44,6 +38,7 @@ struct RegisterStatus {
 	char username[USERNAME_MAXLENGTH];
 	char password[PASSWORD_MAXLENGTH];
 	char fifo[FIFO_NAME_MAXLENGTH];
+    int is_logged_in;
 } RegisteredUsers[100];
 
 struct LoginStatus {
@@ -168,6 +163,24 @@ void open_public_fifo()
 	printf("Open all public FIFO successfully!\n");
 }
 
+/* 
+    Open client's tmp FIFO 
+    @param {pid_t} pid of a client
+    @return {int} file descriptor of client's tmp FIFO
+*/
+int open_client_tmp_fifo(pid_t pid)
+{
+    int tmp_fifo_fd;
+	char tmp_pipename[FIFO_NAME_MAXLENGTH];
+	sprintf(tmp_pipename, "/home/zouyufan_2016200087/chatapp/data/chat_client_%d_tmp_fifo", pid);
+	tmp_fifo_fd = open(tmp_pipename, O_WRONLY);
+	if(tmp_fifo_fd == -1){
+		printf("Could not open %s for write access in open_client_tmp_fifo\n", tmp_pipename);
+		perror(tmp_pipename);
+	}
+    return tmp_fifo_fd;
+}
+
 int get_dst_user_id(char* dst_username){
 	int i;
 	for(i=0; i<last_user_id; i++){
@@ -178,9 +191,16 @@ int get_dst_user_id(char* dst_username){
 	return -1;
 }
 
+int get_dst_user_login_status(char* dst_username)
+{
+    int user_id = get_dst_user_id(dst_username);
+    if(user_id == -1)   /* user does not exists */
+        return -1;
+    return RegisteredUsers[user_id].is_logged_in;
+}
+
 int get_dst_user_fifo(char* dst_username, char* dst_user_fifo){  // return value set to the second param
-	int user_id;
-	user_id = get_dst_user_id(dst_username);
+	int user_id = get_dst_user_id(dst_username);
 	if(user_id != -1){
 		strcpy(dst_user_fifo, RegisteredUsers[user_id].fifo);
 		return 0;
@@ -237,6 +257,53 @@ int retrieve_message_from_src_client(SEND_MESSAGE_REQUEST_PTR req){
 	return 0;
 }
 
+int process_sendmsg_request(SEND_MESSAGE_REQUEST_PTR req){
+	char dst_user_fifo[FIFO_NAME_MAXLENGTH];
+	pid_t dst_client_pid;
+	int fd,status, tmp_fifo_fd;
+    tmp_fifo_fd = open_client_tmp_fifo(req->pid);
+    
+    if(req->type == ONE_TO_ONE){
+        int dst_user_login_status = get_dst_user_login_status(req->dst_username);
+        if( dst_user_login_status == -1 ){  /* user does not exists */
+            printf("Specified user does not exist!\n");
+            return -1;
+        }
+        else if( dst_user_login_status == 0 ){ /* user has not logged in */
+            // todo: store message in the buffer
+        }
+        else if( dst_user_login_status == 1 ){ /* user has logged in */
+            /* open dst client FIFO */
+            if(get_dst_user_fifo(req->dst_username, dst_user_fifo) == -1){
+                printf("Specified user does not exist!\n");
+                return -1;
+            }
+            fd = open(dst_user_fifo, O_WRONLY);
+            if(fd == -1){
+                printf("Could not open client FIFO %s for write access\n", dst_user_fifo);
+                perror(dst_user_fifo);
+                return -1;
+            }
+            
+            /* write message content into dst client FIFO */
+            status = write(fd, req, sizeof(SEND_MESSAGE_REQUEST));
+            if(status == -1){
+                printf("Write into %s failed\n", dst_user_fifo);
+                perror(dst_user_fifo);
+            }
+            else{
+                printf("Message has been written into FIFO %s\n", dst_user_fifo);
+            }
+            close(fd);
+            return 0;
+        }
+    }
+    else if(req->type == ONE_TO_MANY){
+        
+    }
+    close(tmp_fifo_fd);
+}
+
 void process_login_request(LOGIN_REQUEST_PTR req){
 	int i,flag = 0, status;
 	LOGIN_RESPONSE response;
@@ -278,6 +345,7 @@ void process_login_request(LOGIN_REQUEST_PTR req){
             strcpy(CurrentLoggedUsers[last_session_id].username, req->username);
             CurrentLoggedUsers[last_session_id].session_id = last_session_id;
             CurrentLoggedUsers[last_session_id].pid = req->pid;
+            RegisteredUsers[i].is_logged_in = 1; /* update user's log-in status in RegisterStatus */
             last_session_id++;
             
             /* unlock */
@@ -347,7 +415,7 @@ void process_register_request(REGISTER_REQUEST_PTR req){
     }
     /* write response to the client */
     if((status = write(tmp_fifo_fd, &response, sizeof(REGISTER_RESPONSE))) == -1){
-        printf("Could not write into %s in process_login_request\n", tmp_pipename);
+        printf("Could not write into %s in process_register_request\n", tmp_pipename);
         perror(tmp_pipename);
     }
     else{
@@ -404,6 +472,30 @@ void *check_register_request(void *arg)
     }
 }
 
+void *check_sendmsg_request(void *arg)
+{
+    SEND_MESSAGE_REQUEST message_info;
+    struct pollfd *pollfds = (struct pollfd *)malloc(1 * sizeof(struct pollfd));
+    pollfds[0].fd = public_fifo_fd[IDX_MESSAGE];
+    pollfds[0].events = POLLIN|POLLPRI;
+    while(1){
+        switch(poll(pollfds, PUBLIC_FIFO_NUM, -1)){
+            case -1:
+                perror("poll()");
+                break;
+            case 0:
+                printf("time out\n");
+                break;
+            default:
+                if(pollfds[0].revents & POLLIN == POLLIN){
+                    int res_message = read(pollfds[0].fd, &message_info, sizeof(SEND_MESSAGE_REQUEST));
+                    process_sendmsg_request(&message_info);	
+                    break;
+                }
+        }
+    }
+}
+
 int main(){
 	int res_register, res_login, res_message; 
 	int i;
@@ -429,46 +521,10 @@ int main(){
 	
     pthread_create(&threadId_register, NULL, &check_register_request, NULL);
     pthread_create(&threadId_login, NULL, &check_login_request, NULL);
+    pthread_create(&threadId_sendmsg, NULL, &check_sendmsg_request, NULL);
     
 	printf("Server is now running!\n");
     while(1);
-	/* 
-	struct pollfd *pollfds = (struct pollfd *)malloc(PUBLIC_FIFO_NUM * sizeof(struct pollfd));
-	for(i=0; i<PUBLIC_FIFO_NUM; i++){
-		pollfds[i].fd = public_fifo_fd[i];
-		pollfds[i].events = POLLIN|POLLPRI;
-	}
-	while(1){
-		REGISTER_REQUEST register_info;
-		LOGIN_REQUEST login_info;
-		SEND_MESSAGE_REQUEST message_info;
-		switch(poll(pollfds, PUBLIC_FIFO_NUM, -1)){
-			case -1:
-				perror("poll()");
-				break;
-			case 0:
-				printf("time out\n");
-				break;
-			default:
-				for(i=0; i<PUBLIC_FIFO_NUM; i++){
-					if(pollfds[i].revents & POLLIN == POLLIN){
-						switch(i){
-							case IDX_REGISTER:
-								res_register = read(public_fifo_fd[IDX_REGISTER], &register_info, sizeof(REGISTER_REQUEST));
-								process_register_request(&register_info);
-								break;
-							case IDX_LOGIN:
-								res_login = read(public_fifo_fd[IDX_LOGIN], &login_info, sizeof(LOGIN_REQUEST));
-								process_login_request(&login_info);	
-								break;
-							case IDX_MESSAGE:
-								res_message = read(public_fifo_fd[IDX_MESSAGE], &message_info, sizeof(SEND_MESSAGE_REQUEST));
-								retrieve_message_from_src_client(&message_info);
-						}
-					}
-				}
-		}
-	}
-    */
+	
 	exit(0);
 }

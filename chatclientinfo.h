@@ -13,6 +13,9 @@
 #define IDX_LOGIN 1
 #define IDX_MESSAGE 2
 
+#define ONE_TO_ONE 0
+#define ONE_TO_MANY 1
+
 typedef struct {
 	char username[USERNAME_MAXLENGTH];
 	char password[PASSWORD_MAXLENGTH];
@@ -38,6 +41,7 @@ typedef struct {
 } LOGIN_RESPONSE, *LOGIN_RESPONSE_PTR;
 
 typedef struct {
+    int type;
 	char src_username[USERNAME_MAXLENGTH];
 	char dst_username[USERNAME_MAXLENGTH];
 	char message[MESSAGE_MAXLENGTH];
