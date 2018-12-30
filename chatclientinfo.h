@@ -13,8 +13,8 @@
 #define IDX_LOGIN 1
 #define IDX_MESSAGE 2
 
-#define ONE_TO_ONE 0
-#define ONE_TO_MANY 1
+#define TYPE_LOGIN 0
+#define TYPE_LOGOUT 1
 
 typedef struct {
 	char username[USERNAME_MAXLENGTH];
@@ -25,12 +25,13 @@ typedef struct {
 
 typedef struct {
     int status;
-} REGISTER_RESPONSE, *LOGIN_REGISTER_PTR;
+} REGISTER_RESPONSE, *REGISTER_RESPONSE_PTR;
 
 typedef struct {
 	char username[USERNAME_MAXLENGTH];
 	char password[PASSWORD_MAXLENGTH];
     pid_t pid;
+    int type;
 } LOGIN_REQUEST, *LOGIN_REQUEST_PTR;
 
 typedef struct {
@@ -41,7 +42,6 @@ typedef struct {
 } LOGIN_RESPONSE, *LOGIN_RESPONSE_PTR;
 
 typedef struct {
-    int type;
 	char src_username[USERNAME_MAXLENGTH];
 	char dst_username[USERNAME_MAXLENGTH];
 	char message[MESSAGE_MAXLENGTH];

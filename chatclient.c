@@ -10,8 +10,6 @@
 #include <signal.h>
 #include "chatclientinfo.h"
 #include <poll.h>
-#define PUBLIC_FIFO_NUM 3
-
 
 #define ANSI_COLOR_RED     "\x1b[31m" 
 #define ANSI_COLOR_BRIGHT_GREEN   "\x1b[92m"
@@ -25,6 +23,7 @@ char public_fifo_name[PUBLIC_FIFO_NUM][100] = {
 	{"/home/zouyufan_2016200087/chatapp/data/zyf_login"}, // handling login requests
 	{"/home/zouyufan_2016200087/chatapp/data/zyf_sendmsg"}  // handling messages
 };
+
 char mypipename[FIFO_NAME_MAXLENGTH];
 int my_fifo_fd = -1;
 char login_username[USERNAME_MAXLENGTH] = "";
@@ -36,8 +35,10 @@ char tmp_pipename[FIFO_NAME_MAXLENGTH];
 
 char operation[10];
 void get_user_operation();
+int logout();
 void handler(int sig){	/* remove pipe if signaled */
-	unlink(mypipename);
+    if(session_id != -1) logout();
+    unlink(mypipename);
     close(tmp_fifo_fd);
     unlink(tmp_pipename);
 	exit(1);
@@ -167,6 +168,8 @@ int login(){
 			goto LOGIN_ERR_HANDLER;
 		}
 	}
+    
+    /* open client's tmp FIFO */
 	tmp_fifo_fd = open(tmp_pipename, O_RDONLY | O_NONBLOCK);
 	if(tmp_fifo_fd == -1){
 		printf(RED("Could not open %s for read only access\n"), tmp_pipename);
@@ -181,7 +184,7 @@ int login(){
 		printf(RED("Send login request to public FIFO %s failed\n"), public_fifo_name[IDX_LOGIN]);
 	}
 	else{
-		/* get result from server */
+		/* get result from server through client's tmp FIFO */
 		LOGIN_RESPONSE response;
 		while(1){
 			res = read(tmp_fifo_fd, &response, sizeof(LOGIN_RESPONSE));
@@ -207,9 +210,7 @@ int login(){
 					}
 					pollfds[1].fd = my_fifo_fd;        
 					pollfds[1].events = POLLIN|POLLPRI;
-					close(tmp_fifo_fd);
 					close(fifo_fd);
-					unlink(tmp_pipename);
 					return 0;
 					break;
 				}
@@ -233,15 +234,43 @@ LOGIN_ERR_HANDLER:
 		case -3:
 			close(tmp_fifo_fd);
 		case -2:
-			unlink(tmp_pipename);
+			//unlink(tmp_pipename);
 		case -1:
 			close(fifo_fd);
 			return -1;
 	}
 }
 
+int logout()
+{
+    LOGIN_REQUEST req;
+    LOGIN_RESPONSE response;
+    
+    req.type = TYPE_LOGOUT;
+    strcpy(req.username, login_username);
+    req.pid = getpid();
+    
+    /* open server fifo for writing */
+	int fifo_fd = open(public_fifo_name[IDX_LOGIN], O_WRONLY);
+    if(write(fifo_fd, &req, sizeof(LOGIN_REQUEST)) == -1){
+		printf(RED("Send logout request to public FIFO %s failed\n"), public_fifo_name[IDX_LOGIN]);
+	}
+	else{
+        while(1){
+			int res = read(tmp_fifo_fd, &response, sizeof(LOGIN_RESPONSE));
+			if(res> 0){
+				if(response.status == 0){
+                    return 0;
+                }
+            }
+        }
+        printf("Logout failed.\n");
+    }
+}
+
 int send_message(){
 	int fifo_fd;
+    char type;
 	char temp;
 	char dst_username[USERNAME_MAXLENGTH];
 	char message[MESSAGE_MAXLENGTH];
@@ -249,45 +278,108 @@ int send_message(){
 		printf("Please login first!\n");
 		return -1;
 	}
-	printf("To whom do you want to send a message?\n");
-	printf("> ");
-	scanf("%c", &temp);
-	scanf("%[^\n]", dst_username);
-	ReplaceStrSpace(dst_username);
-	printf("Type your message.\n");
-	printf("> ");
-	fflush(stdout);
-	scanf("%c", &temp);
-	scanf("%[^\n]", message);
-	
-	/* check if server fifo exists */
-	if(access(public_fifo_name[IDX_MESSAGE], F_OK) == -1){
-		printf(RED("Could not open FIFO %s\n"), public_fifo_name[IDX_MESSAGE]);
-		exit(EXIT_FAILURE);
-	}
-	
-	/* open server fifo for write */
-	fifo_fd = open(public_fifo_name[IDX_MESSAGE], O_WRONLY);
-	if(fifo_fd == -1){
-		printf(RED("Could not open %s for write access\n"), public_fifo_name[IDX_MESSAGE]);
-		exit(EXIT_FAILURE);
-	}
-	
-	SEND_MESSAGE_REQUEST req;
-	/* construct client info */
-	strcpy(req.src_username, login_username);
-	strcpy(req.dst_username, dst_username);
-	strcpy(req.message, message);
-    req.pid = getpid();
-	
-	/* write client info to server fifo */
-	if(write(fifo_fd, &req, sizeof(SEND_MESSAGE_REQUEST)) == -1){
-		printf(RED("Send message to public FIFO %s failed\n"), public_fifo_name[IDX_MESSAGE]);
-	}
-	else{
-		printf(BRIGHT_GREEN("Message sent!\n"));
-	}
-	close(fifo_fd);
+    printf("Type 's' to send your message to a single user, or 'm' to mutiple users.\n");
+    printf("> ");
+    scanf("%c", &temp);
+    scanf("%c", &type);
+    if(type == 's'){
+        printf("To whom do you want to send a message?\n");
+        printf("> ");
+        scanf("%c", &temp);
+        scanf("%[^\n]", dst_username);
+        ReplaceStrSpace(dst_username);
+        printf("Type your message.\n");
+        printf("> ");
+        fflush(stdout);
+        scanf("%c", &temp);
+        scanf("%[^\n]", message);
+        
+        /* check if server fifo exists */
+        if(access(public_fifo_name[IDX_MESSAGE], F_OK) == -1){
+            printf(RED("Could not open FIFO %s\n"), public_fifo_name[IDX_MESSAGE]);
+            exit(EXIT_FAILURE);
+        }
+        
+        /* open server fifo for write */
+        fifo_fd = open(public_fifo_name[IDX_MESSAGE], O_WRONLY);
+        if(fifo_fd == -1){
+            printf(RED("Could not open %s for write access\n"), public_fifo_name[IDX_MESSAGE]);
+            exit(EXIT_FAILURE);
+        }
+        
+        SEND_MESSAGE_REQUEST req;
+        /* construct client info */
+        strcpy(req.src_username, login_username);
+        strcpy(req.dst_username, dst_username);
+        strcpy(req.message, message);
+        req.pid = getpid();
+        
+        /* write client info to server fifo */
+        if(write(fifo_fd, &req, sizeof(SEND_MESSAGE_REQUEST)) == -1){
+            printf(RED("Send message to public FIFO %s failed\n"), public_fifo_name[IDX_MESSAGE]);
+        }
+        else{
+            printf(BRIGHT_GREEN("Message has been sent!\n"));
+        }
+        close(fifo_fd);
+    }
+    else if(type == 'm'){
+        int user_num = 0;
+        char dst_usernames[100][USERNAME_MAXLENGTH];
+        
+        printf("Type your message.\n");
+        printf("> ");
+        fflush(stdout);
+        scanf("%c", &temp);
+        scanf("%[^\n]", message);
+        //fgets(dst_usernames[user_num], MESSAGE_MAXLENGTH, stdin);
+        
+        printf("How many users do you want to send a message to?\n");
+        printf("> ");
+        fflush(stdout);
+        scanf("%d", &user_num);
+        printf("Type users that you want to send a message to, with a name in a line.\n");
+        for(int i=0; i<user_num; i++)
+        {    
+            scanf("%c", &temp);
+            scanf("%[^\n]", dst_usernames[i]);
+            ReplaceStrSpace(dst_usernames[i]);
+        }
+        
+        /* check if server fifo exists */
+        if(access(public_fifo_name[IDX_MESSAGE], F_OK) == -1){
+            printf(RED("Could not open FIFO %s\n"), public_fifo_name[IDX_MESSAGE]);
+            exit(EXIT_FAILURE);
+        }
+        
+        /* open server fifo for write */
+        fifo_fd = open(public_fifo_name[IDX_MESSAGE], O_WRONLY);
+        if(fifo_fd == -1){
+            printf(RED("Could not open %s for write access\n"), public_fifo_name[IDX_MESSAGE]);
+            exit(EXIT_FAILURE);
+        }
+        
+        for(int i=0; i<user_num; i++){
+            SEND_MESSAGE_REQUEST req;
+            /* construct client info */
+            strcpy(req.src_username, login_username);
+            strcpy(req.dst_username, dst_usernames[i]);
+            strcpy(req.message, message);
+            req.pid = getpid();
+            
+            /* write client info to server fifo */
+            if(write(fifo_fd, &req, sizeof(SEND_MESSAGE_REQUEST)) == -1){
+                printf(RED("Send message to public FIFO %s failed\n"), public_fifo_name[IDX_MESSAGE]);
+            }
+            else{
+                printf(BRIGHT_GREEN("Message has been sent to %s.\n"), dst_usernames[i]);
+            }
+        }
+        close(fifo_fd);
+    }
+    else {
+        printf("Sorry, I don't understand this. Please try again.\n");
+    }
 	return 0;
 }
 
@@ -360,14 +452,19 @@ int main(int argc, char *argv[]){
 						send_message();
 					}
 					else if((strcmp(operation, "q") == 0)){
+                        printf("Goodbye.\n");
+                        // todo: log out from the server
+                        if(session_id != -1){
+                            logout();
+                            close(tmp_fifo_fd);
+                            unlink(tmp_pipename);
+                        }
 						close(my_fifo_fd);
 						(void)unlink(mypipename);
-                        close(tmp_fifo_fd);
-                        unlink(tmp_pipename);
 						exit(0);
 					}
 					else{
-						printf("I don't understand this. Please try again.\n");
+						printf("Sorry, I don't understand this. Please try again.\n");
 					}
 					if(session_id == -1){
 						printf("Type 'r' to register, 'l' to login, 'm' to send messages, or 'q' to quit.\n");
