@@ -9,6 +9,8 @@
 #define MESSAGE_MAXLENGTH 128
 #define MAXBUF 1024
 
+#define PUBLIC_FIFO_NUM 3
+
 #define IDX_REGISTER 0
 #define IDX_LOGIN 1
 #define IDX_MESSAGE 2

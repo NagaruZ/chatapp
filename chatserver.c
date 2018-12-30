@@ -18,7 +18,7 @@
 #define DELIM "="
 #define PUBLIC_FIFO_NUM 3
 
-/* 服务端配置信息 */
+/* server configuration */
 struct config
 {
    char FIFO[3][MAXBUF];    /* array of paths of FIFO for REGISTER, LOGIN, SENDMSG */
@@ -49,6 +49,13 @@ struct LoginStatus {
     int is_valid;
 } CurrentLoggedUsers[100];
 
+struct __MessageBuffer {
+    char message[MESSAGE_MAXLENGTH];
+    char src_username[USERNAME_MAXLENGTH];
+    char dst_username[USERNAME_MAXLENGTH];
+    int is_valid;
+} MessageBuffer[MAXBUF];
+
 pthread_mutex_t mutex;
 int last_user_id = 0;
 int last_session_id = 0;
@@ -64,6 +71,12 @@ void handler(int sig){
 	}
     
 	exit(1);
+}
+
+void init_message_buffer()
+{
+    for(int i=0; i<MAXBUF; i++)
+        MessageBuffer[i].is_valid = 0;
 }
 
 int init_daemon(void) 
@@ -302,6 +315,30 @@ int process_sendmsg_request(SEND_MESSAGE_REQUEST_PTR req){
     }
     else if( dst_user_login_status == 0 ){ /* user has not logged in */
         // todo: store message in the buffer
+        int pos = 0;
+        while(pos < MAXBUF && MessageBuffer[pos].is_valid != 0) pos++; /* find a position which is valid to store message */
+        if(pos == MAXBUF) { /* position invalid */
+            printf("Message has not been sent: user %s has not logged in, and message buffer is full.\n", req->dst_username);
+            return -1;
+        }
+        else {  /* position valid */
+        
+            /* lock */
+            if(pthread_mutex_lock(&mutex) != 0)
+                perror("lock failed");
+            
+            MessageBuffer[pos].is_valid = 1;
+            strcpy(MessageBuffer[pos].message, req->message);
+            strcpy(MessageBuffer[pos].src_username, req->src_username);
+            strcpy(MessageBuffer[pos].dst_username, req->dst_username);
+            
+            /* unlock */
+            if(pthread_mutex_unlock(&mutex) != 0)
+                perror("unlock failed");
+            
+            printf("Message to %s has been stored.\n", req->dst_username);
+            return 0;
+        }
     }
     else if( dst_user_login_status == 1 ){ /* user has logged in */
         /* open dst user FIFO */
@@ -380,7 +417,6 @@ void process_login_request(LOGIN_REQUEST_PTR req){
                 /* unlock */
                 if(pthread_mutex_unlock(&mutex) != 0)
                     perror("unlock failed");
-                printf("User %s has logged in!\n", req->username);
             }
             else{       /* not found */
                 response.status = -1;
@@ -394,6 +430,40 @@ void process_login_request(LOGIN_REQUEST_PTR req){
         }
         else{
             printf("Login response has been written into %s\n", tmp_pipename);
+        }
+        /* after response, client has created user FIFO */
+        /* check if there are some stored messages to be sent */
+        for(int pos = 0; pos < MAXBUF; pos++){
+            if(MessageBuffer[pos].is_valid == 1 && strcmp(MessageBuffer[pos].dst_username, req->username) == 0){
+                /* construct message response */
+                SEND_MESSAGE_REQUEST msg_req;
+                strcpy(msg_req.src_username, MessageBuffer[pos].src_username);
+                strcpy(msg_req.dst_username, req->username);
+                strcpy(msg_req.message, MessageBuffer[pos].message);
+                msg_req.pid = 1; // not used here
+                /* write response to user FIFO */
+                char dst_user_fifo[FIFO_NAME_MAXLENGTH];
+                get_dst_user_fifo(req->username, dst_user_fifo);
+                int fd = open(dst_user_fifo, O_WRONLY);
+                if(fd == -1){
+                    printf("Could not open client FIFO %s for write access\n", dst_user_fifo);
+                    perror(dst_user_fifo);
+                    return ;
+                }
+                
+                /* write message content into dst user FIFO */
+                status = write(fd, &msg_req, sizeof(SEND_MESSAGE_REQUEST));
+                if(status == -1){
+                    printf("Write into %s failed\n", dst_user_fifo);
+                    perror(dst_user_fifo);
+                }
+                else{
+                    printf("Message has been written into FIFO %s\n", dst_user_fifo);
+                }
+                close(fd);
+                /* update message buffer record state */
+                MessageBuffer[pos].is_valid = 0;
+            }
         }
         close(tmp_fifo_fd);
     }
@@ -523,6 +593,7 @@ int main(){
         exit(1);
     }
     
+    init_message_buffer();
 	create_public_fifo();
 	open_public_fifo();
     
