@@ -16,33 +16,21 @@
 #define CONF_FILENAME "server.conf"
 
 #define DELIM "="
-#define PUBLIC_FIFO_NUM 3
 
-/* server configuration */
-struct config
+struct __config
 {
    char FIFO[3][MAXBUF];    /* array of paths of FIFO for REGISTER, LOGIN, SENDMSG */
    int MAX_ONLINE_USERS;
-};
-
-void create_public_fifo();
-void handler(int sig);
-void process_register_request(REGISTER_REQUEST_PTR req);
-void process_login_request(LOGIN_REQUEST_PTR req);
-int get_dst_user_fifo(char* dst_username, char* dst_user_fifo); // return value set to the second param
-int get_dst_client_pid(char* dst_username);
-int get_dst_user_id(char* dst_username);
-int get_dst_session_id(char* dst_username);
-
+} server_conf;
 int public_fifo_fd[PUBLIC_FIFO_NUM];
-struct RegisterStatus {
+struct __RegisterStatus {
 	char username[USERNAME_MAXLENGTH];
 	char password[PASSWORD_MAXLENGTH];
 	char fifo[FIFO_NAME_MAXLENGTH];
     int is_logged_in;
 } RegisteredUsers[100];
 
-struct LoginStatus {
+struct __LoginStatus {
 	char username[USERNAME_MAXLENGTH];
 	int session_id;
     pid_t pid;
@@ -61,7 +49,25 @@ int last_user_id = 0;
 int last_session_id = 0;
 int online_user_num = 0;
 pthread_t threadId_register, threadId_login, threadId_sendmsg;
-struct config server_conf;
+
+/* function definitions */
+void handler(int sig);
+void init_message_buffer();
+int init_daemon();
+struct __config get_config(char *filename);
+void create_public_fifo();
+void open_public_fifo();
+int open_client_tmp_fifo(pid_t pid);
+int get_dst_user_id(char* dst_username);
+int get_dst_user_login_status(char* dst_username);
+int set_dst_user_login_status(char* dst_username, int status);
+int get_dst_user_fifo(char* dst_username, char* dst_user_fifo);
+int open_dst_user_fifo(char* dst_user_fifo);
+int get_dst_session_id(char* dst_username);
+int get_dst_client_pid(char* dst_username);
+void *process_login_request(void *arg);
+void *process_register_request(void *arg);
+void *process_sendmsg_request(void *arg);
 
 void handler(int sig){
 	int i;
@@ -69,7 +75,6 @@ void handler(int sig){
 	for(i=0; i<PUBLIC_FIFO_NUM; i++){
 		unlink(server_conf.FIFO[i]);
 	}
-    
 	exit(1);
 }
 
@@ -79,7 +84,7 @@ void init_message_buffer()
         MessageBuffer[i].is_valid = 0;
 }
 
-int init_daemon(void) 
+int init_daemon()
 { 
 	pid_t pid; 
 	int i; 
@@ -109,9 +114,9 @@ int init_daemon(void)
 	return 0;
 }
 
-struct config get_config(char *filename) 
+struct __config get_config(char *filename) 
 {
-    struct config configstruct;
+    struct __config configstruct;
     FILE *file = fopen(filename, "r");
 
     if (file != NULL)
@@ -167,6 +172,7 @@ void open_public_fifo()
 	/* open FIFO for reading */
 	for(i=0; i<PUBLIC_FIFO_NUM; i++){
 		public_fifo_fd[i] = open(server_conf.FIFO[i], O_RDONLY | O_NONBLOCK);
+        //public_fifo_fd[i] = open(server_conf.FIFO[i], O_RDONLY );
 		if(public_fifo_fd[i] == -1){
 			printf("Could not open public FIFO %s for read only access\n", server_conf.FIFO[i]);
 			perror(server_conf.FIFO[i]);
@@ -194,20 +200,24 @@ int open_client_tmp_fifo(pid_t pid)
     return tmp_fifo_fd;
 }
 
+/*
+    get user id of a specified user
+    @param  dst_username    name of the specified user
+    @return                 user id on success, -1 on fail
+*/
 int get_dst_user_id(char* dst_username){
-	int i;
+	int i = -1;
 	for(i=0; i<last_user_id; i++){
-		if(strcmp(RegisteredUsers[i].username, dst_username) == 0){
-			return i;
-		}
+		if(strcmp(RegisteredUsers[i].username, dst_username) == 0)
+            break;
 	}
-	return -1;
+	return i;
 }
 
-
 /*
-    get user's login status
-    @return is_logged_in or -1 when failed
+    get login status of a specified user
+    @param  dst_username    name of the specified user
+    @return                 login status on success, -1 on fail
 */
 int get_dst_user_login_status(char* dst_username)
 {
@@ -218,10 +228,10 @@ int get_dst_user_login_status(char* dst_username)
 }
 
 /*
-    set user's login status
-    @param  dst_username    the name of user whose login status will be set
+    set login status of a specified user
+    @param  dst_username    name of the specified user
     @param  status          the status to be set
-    @return 0 when successful, -1 when failed
+    @return                 0 when successful, -1 when failed
 */
 int set_dst_user_login_status(char* dst_username, int status)
 {
@@ -244,7 +254,13 @@ int set_dst_user_login_status(char* dst_username, int status)
     return 0;
 }
 
-int get_dst_user_fifo(char* dst_username, char* dst_user_fifo){  // return value set to the second param
+/* 
+    get user's FIFO path
+    @param  dst_username    the name of user
+    @param  dst_user_fifo   the path of user's FIFO
+    @return                 file descriptor of dst_user_fifo
+*/
+int get_dst_user_fifo(char* dst_username, char* dst_user_fifo){
 	int user_id = get_dst_user_id(dst_username);
 	if(user_id != -1){
 		strcpy(dst_user_fifo, RegisteredUsers[user_id].fifo);
@@ -253,79 +269,67 @@ int get_dst_user_fifo(char* dst_username, char* dst_user_fifo){  // return value
 	else return -1;
 }
 
-int get_dst_session_id(char* dst_username){
-	int i;
-	for(i=0; i<last_session_id; i++){
-		if(strcmp(CurrentLoggedUsers[i].username, dst_username) == 0){
-			return i;
-		}
-	}
-	return -1;
+/* 
+    open user's FIFO
+    @param  dst_user_fifo   the path of user's FIFO
+    @return                 file descriptor of dst_user_fifo
+*/
+int open_dst_user_fifo(char* dst_user_fifo)
+{
+    int fd = open(dst_user_fifo, O_WRONLY);
+    if(fd == -1){
+        printf("Could not open client FIFO %s for write access in open_dst_user_fifo()\n", dst_user_fifo);
+        perror(dst_user_fifo);
+    }
+    return fd;
 }
 
+/* 
+    get session id of a specified user
+    @param  dst_username    name of the specified user
+    @return                 session id on success, -1 on fail
+*/
+int get_dst_session_id(char* dst_username){
+	int i = -1;
+	for(i=0; i<last_session_id; i++){
+		if(strcmp(CurrentLoggedUsers[i].username, dst_username) == 0 && CurrentLoggedUsers[i].is_valid)
+            break;
+	}
+	return i;
+}
+
+/* 
+    get pid of client where a specified user logged in
+    @param  dst_username    name of the specified user
+    @return                 pid on success, -1 on fail
+*/
 int get_dst_client_pid(char* dst_username){
 	int session_id;
 	session_id = get_dst_session_id(dst_username);
-	if(session_id != -1){
-		return CurrentLoggedUsers[session_id].pid;
-	}
-	else return -1;
+    return (session_id != -1)? CurrentLoggedUsers[session_id].pid: -1;
 }
 
-/* retrieve message from src client, notice the dest client */
-int retrieve_message_from_src_client(SEND_MESSAGE_REQUEST_PTR req){
-	char dst_user_fifo[FIFO_NAME_MAXLENGTH];
-	pid_t dst_client_pid;
-	int fd,status;
-	/* open dst client FIFO */
-	if(get_dst_user_fifo(req->dst_username, dst_user_fifo) == -1){
-		printf("Specified user does not exist!\n");
-		return -1;
-	}
-	fd = open(dst_user_fifo, O_WRONLY);
-	if(fd == -1){
-		printf("Could not open client FIFO %s for write access\n", dst_user_fifo);
-		perror(dst_user_fifo);
-		return -1;
-	}
-	
-	/* write message content into dst client FIFO */
-	status = write(fd, req, sizeof(SEND_MESSAGE_REQUEST));
-    if(status == -1){
-        printf("Write into %s failed\n", dst_user_fifo);
-        perror(dst_user_fifo);
-    }
-    else{
-    	printf("Message has been written into FIFO %s\n", dst_user_fifo);
-	}
-    close(fd);
-	return 0;
-}
-
-int process_sendmsg_request(SEND_MESSAGE_REQUEST_PTR req){
-	char dst_user_fifo[FIFO_NAME_MAXLENGTH];
-	pid_t dst_client_pid;
-	int fd,status, tmp_fifo_fd;
-    //tmp_fifo_fd = open_client_tmp_fifo(req->pid);
+void *process_sendmsg_request(void *arg){
+    SEND_MESSAGE_REQUEST_PTR req = (SEND_MESSAGE_REQUEST_PTR)arg;
     
     int dst_user_login_status = get_dst_user_login_status(req->dst_username);
     if( dst_user_login_status == -1 ){  /* user does not exists */
         printf("Specified user does not exist!\n");
-        return -1;
+        return NULL;
     }
     else if( dst_user_login_status == 0 ){ /* user has not logged in */
-        // todo: store message in the buffer
+        /* store message in the buffer */
         int pos = 0;
         while(pos < MAXBUF && MessageBuffer[pos].is_valid != 0) pos++; /* find a position which is valid to store message */
         if(pos == MAXBUF) { /* position invalid */
             printf("Message has not been sent: user %s has not logged in, and message buffer is full.\n", req->dst_username);
-            return -1;
+            return NULL;
         }
         else {  /* position valid */
         
             /* lock */
             if(pthread_mutex_lock(&mutex) != 0)
-                perror("lock failed");
+                perror("lock failed in process_sendmsg_request()");
             
             MessageBuffer[pos].is_valid = 1;
             strcpy(MessageBuffer[pos].message, req->message);
@@ -334,27 +338,20 @@ int process_sendmsg_request(SEND_MESSAGE_REQUEST_PTR req){
             
             /* unlock */
             if(pthread_mutex_unlock(&mutex) != 0)
-                perror("unlock failed");
+                perror("unlock failed in process_sendmsg_request()");
             
             printf("Message to %s has been stored.\n", req->dst_username);
-            return 0;
+            return NULL;
         }
     }
     else if( dst_user_login_status == 1 ){ /* user has logged in */
         /* open dst user FIFO */
-        if(get_dst_user_fifo(req->dst_username, dst_user_fifo) == -1){
-            printf("Specified user does not exist!\n");
-            return -1;
-        }
-        fd = open(dst_user_fifo, O_WRONLY);
-        if(fd == -1){
-            printf("Could not open client FIFO %s for write access\n", dst_user_fifo);
-            perror(dst_user_fifo);
-            return -1;
-        }
+        char dst_user_fifo[FIFO_NAME_MAXLENGTH];
+        get_dst_user_fifo(req->dst_username, dst_user_fifo);
+        int fd = open_dst_user_fifo(dst_user_fifo);
         
         /* write message content into dst user FIFO */
-        status = write(fd, req, sizeof(SEND_MESSAGE_REQUEST));
+        int status = write(fd, req, sizeof(SEND_MESSAGE_REQUEST));
         if(status == -1){
             printf("Write into %s failed\n", dst_user_fifo);
             perror(dst_user_fifo);
@@ -363,28 +360,21 @@ int process_sendmsg_request(SEND_MESSAGE_REQUEST_PTR req){
             printf("Message has been written into FIFO %s\n", dst_user_fifo);
         }
         close(fd);
-        return 0;
+        return NULL;
     }
-    close(tmp_fifo_fd);
 }
 
-void process_login_request(LOGIN_REQUEST_PTR req){
+void *process_login_request(void *arg){
+    LOGIN_REQUEST_PTR req = (LOGIN_REQUEST_PTR)arg;
 	int i,flag = 0, status;
 	LOGIN_RESPONSE response;
+    STATE_UPDATE_NOTICE notice;
     
 	/* open client's tmp FIFO */
-    int tmp_fifo_fd;
-	char tmp_pipename[FIFO_NAME_MAXLENGTH];
-	sprintf(tmp_pipename, "/home/zouyufan_2016200087/chatapp/data/chat_client_%d_tmp_fifo", req->pid);
-	tmp_fifo_fd = open(tmp_pipename, O_WRONLY);
-	if(tmp_fifo_fd == -1){
-		printf("Could not open %s for write access in process_login_request\n", tmp_pipename);
-		perror(tmp_pipename);
-		return ;
-	}
+    int tmp_fifo_fd = open_client_tmp_fifo(req->pid);
     
     if(req->type == TYPE_LOGIN){
-        // check if currently online user number exceeds max online user number limit
+        /* check if currently online user number exceeds max online user number limit */
         if(online_user_num >= server_conf.MAX_ONLINE_USERS){
             response.status = -2;
             response.session_id = -1;
@@ -400,11 +390,11 @@ void process_login_request(LOGIN_REQUEST_PTR req){
             if(flag){   /* found */
                 response.status = 0;
                 response.session_id = last_session_id;
-                // todo: return logged-in user info
+                /* send logged-in user info to all online clients */
                 
                 /* lock */
                 if(pthread_mutex_lock(&mutex) != 0)
-                    perror("lock failed");
+                    perror("lock failed in process_login_request()");
                 
                 strcpy(CurrentLoggedUsers[last_session_id].username, req->username);
                 CurrentLoggedUsers[last_session_id].session_id = last_session_id;
@@ -416,40 +406,69 @@ void process_login_request(LOGIN_REQUEST_PTR req){
                 
                 /* unlock */
                 if(pthread_mutex_unlock(&mutex) != 0)
-                    perror("unlock failed");
+                    perror("unlock failed in process_login_request()");
+                
+                /* init notice */
+                notice.type = TYPE_ONLINE_USER_INFO;
+                notice.online_user_num = online_user_num;
+                /* notice.username_list = (char **)malloc(online_user_num * sizeof(char*));
+                for(int idx=0; idx < online_user_num; idx++){
+                    notice.username_list[idx] = (char*)malloc(USERNAME_MAXLENGTH * sizeof(char));
+                } */
+                for(int idx2 = 0, idx = 0; idx < last_session_id; idx++) {
+                    if(idx2 >= online_user_num) break;
+                    if(CurrentLoggedUsers[idx].is_valid){
+                        strcpy(notice.username_list[idx2++], CurrentLoggedUsers[idx].username);
+                    }
+                }
             }
             else{       /* not found */
                 response.status = -1;
                 response.session_id = -1;
             }
         }
-        /* write response to the client's tmp fifo */
+        /* write login response to the client's tmp FIFO */
         if((status = write(tmp_fifo_fd, &response, sizeof(LOGIN_RESPONSE))) == -1){
-            printf("Could not write into %s in process_login_request\n", tmp_pipename);
-            perror(tmp_pipename);
+            printf("Could not write login response into tmp FIFO of client %d in process_login_request()\n", req->pid);
+            perror("login response");
         }
         else{
-            printf("Login response has been written into %s\n", tmp_pipename);
+            printf("Login response has been written into tmp FIFO of client %d\n", req->pid);
         }
-        /* after response, client has created user FIFO */
+        close(tmp_fifo_fd);
+        
+        /* write online user notice to all client's tmp FIFO */
+        for(int idx=0; idx < last_session_id; idx++) {
+            if(CurrentLoggedUsers[idx].is_valid) {
+                tmp_fifo_fd = open_client_tmp_fifo(CurrentLoggedUsers[idx].pid);
+                if((status = write(tmp_fifo_fd, &notice, sizeof(STATE_UPDATE_NOTICE))) == -1){
+                    printf("Could not write online user notice into tmp FIFO of client %d in process_login_request()\n", CurrentLoggedUsers[idx].pid);
+                    perror("online user notice");
+                }
+                else{
+                    printf("Online user notice has been written into tmp FIFO of client %d\n", CurrentLoggedUsers[idx].pid);
+                }
+                close(tmp_fifo_fd);
+            }
+        }
+        
+        
+        /* after a 'success' response, client has created user FIFO */
         /* check if there are some stored messages to be sent */
         for(int pos = 0; pos < MAXBUF; pos++){
             if(MessageBuffer[pos].is_valid == 1 && strcmp(MessageBuffer[pos].dst_username, req->username) == 0){
+                /* if there are some */
                 /* construct message response */
                 SEND_MESSAGE_REQUEST msg_req;
                 strcpy(msg_req.src_username, MessageBuffer[pos].src_username);
                 strcpy(msg_req.dst_username, req->username);
                 strcpy(msg_req.message, MessageBuffer[pos].message);
                 msg_req.pid = 1; // not used here
-                /* write response to user FIFO */
+                
+                /* open dst user FIFO */
                 char dst_user_fifo[FIFO_NAME_MAXLENGTH];
                 get_dst_user_fifo(req->username, dst_user_fifo);
-                int fd = open(dst_user_fifo, O_WRONLY);
-                if(fd == -1){
-                    printf("Could not open client FIFO %s for write access\n", dst_user_fifo);
-                    perror(dst_user_fifo);
-                    return ;
-                }
+                int fd = open_dst_user_fifo(dst_user_fifo);
                 
                 /* write message content into dst user FIFO */
                 status = write(fd, &msg_req, sizeof(SEND_MESSAGE_REQUEST));
@@ -462,14 +481,23 @@ void process_login_request(LOGIN_REQUEST_PTR req){
                 }
                 close(fd);
                 /* update message buffer record state */
+                
+                /* lock */
+                if(pthread_mutex_lock(&mutex) != 0)
+                    perror("lock failed");
+                
                 MessageBuffer[pos].is_valid = 0;
+                
+                /* unlock */
+                if(pthread_mutex_unlock(&mutex) != 0)
+                    perror("unlock failed");
             }
         }
-        close(tmp_fifo_fd);
+        
     }
     else if(req->type == TYPE_LOGOUT){
-        set_dst_user_login_status(req->username, 0);
-        response.status = 0;
+        
+        response.status = set_dst_user_login_status(req->username, 0); // set_dst_user_login_status() is thread safe
         
         /* lock */
         if(pthread_mutex_lock(&mutex) != 0)
@@ -481,39 +509,63 @@ void process_login_request(LOGIN_REQUEST_PTR req){
         if(pthread_mutex_unlock(&mutex) != 0)
             perror("unlock failed");
                 
-        /* open dst user FIFO */
-        char dst_user_fifo[FIFO_NAME_MAXLENGTH];
-        get_dst_user_fifo(req->username, dst_user_fifo) == -1;
-        int user_fifo_fd = open(dst_user_fifo, O_WRONLY);
-        if(user_fifo_fd == -1){
-            printf("Could not open client FIFO %s for write access\n", dst_user_fifo);
-            perror(dst_user_fifo);
+        /* init notice */
+        notice.type = TYPE_ONLINE_USER_INFO;
+        notice.online_user_num = online_user_num;
+        for(int idx2 = 0, idx = 0; idx < last_session_id; idx++) {
+            if(idx2 >= online_user_num) break;
+            if(CurrentLoggedUsers[idx].is_valid){
+                strcpy(notice.username_list[idx2++], CurrentLoggedUsers[idx].username);
+            }
         }
+        
+        /* update tmp_fifo_fd  */
+        tmp_fifo_fd = open_client_tmp_fifo(req->pid);
         if((status = write(tmp_fifo_fd, &response, sizeof(LOGIN_RESPONSE))) == -1){
-            printf("Could not write into %s in process_login_request\n", dst_user_fifo);
-            perror(dst_user_fifo);
+            printf("Could not write logout response into tmp FIFO of client %d in process_login_request\n", req->pid);
+            perror("logout response");
         }
         else{
-            printf("Logout response has been written into %s\n", dst_user_fifo);
+            printf("Logout response has been written into tmp FIFO of client %d\n", req->pid);
         }
-        close(user_fifo_fd);
+        //close(user_fifo_fd);
+        
+        /* write online user notice to all client's tmp FIFO */
+        for(int idx=0; idx < last_session_id; idx++) {
+            if(CurrentLoggedUsers[idx].is_valid) {
+                tmp_fifo_fd = open_client_tmp_fifo(CurrentLoggedUsers[idx].pid);
+                if((status = write(tmp_fifo_fd, &notice, sizeof(STATE_UPDATE_NOTICE))) == -1){
+                    printf("Could not write online user notice into tmp FIFO of client %d in process_login_request()\n", CurrentLoggedUsers[idx].pid);
+                    perror("online user notice");
+                }
+                else{
+                    printf("Online user notice has been written into tmp FIFO of client %d\n", CurrentLoggedUsers[idx].pid);
+                }
+                close(tmp_fifo_fd);
+            }
+        }
+    }
+    else {
+        response.status = -3;
+        /* write login response to the client's tmp FIFO */
+        if((status = write(tmp_fifo_fd, &response, sizeof(LOGIN_RESPONSE))) == -1){
+            printf("Could not write login response into tmp FIFO of client %d in process_login_request()\n", req->pid);
+            perror("login response");
+        }
+        else{
+            printf("Login response has been written into tmp FIFO of client %d\n", req->pid);
+        }
+        close(tmp_fifo_fd);
     }
 }
 
-void process_register_request(REGISTER_REQUEST_PTR req){
-    int i,flag = 0, status;
+void *process_register_request(void *arg){
+    REGISTER_REQUEST_PTR req = (REGISTER_REQUEST_PTR)arg;
+    int flag = 0, status;
     REGISTER_RESPONSE response;
     
     /* open client's tmp FIFO */
-    int tmp_fifo_fd;
-    char tmp_pipename[FIFO_NAME_MAXLENGTH];
-    sprintf(tmp_pipename, "/home/zouyufan_2016200087/chatapp/data/chat_client_%d_tmp_fifo", req->pid);
-    tmp_fifo_fd = open(tmp_pipename, O_WRONLY);
-    if(tmp_fifo_fd == -1){
-        printf("Could not open %s for write access in process_register_request\n", tmp_pipename);
-        perror(tmp_pipename);
-        return ;
-    }
+    int tmp_fifo_fd = open_client_tmp_fifo(req->pid);
     
     /* check if there exists a user with the same username */
     for(int i=0; i<last_user_id; i++){
@@ -523,13 +575,13 @@ void process_register_request(REGISTER_REQUEST_PTR req){
         }
     }
     if(flag){       /* user exists, register failed */
-        /* set response */
+        /* set failed response status */
         response.status = -1;
     }
     else {          /* user not exists, register a new one  */
         /* lock */
         if(pthread_mutex_lock(&mutex) != 0)
-            perror("lock failed");
+            perror("lock failed in process_register_request()");
         
         strcpy(RegisteredUsers[last_user_id].username, req->username);
         strcpy(RegisteredUsers[last_user_id].password, req->password);
@@ -539,47 +591,25 @@ void process_register_request(REGISTER_REQUEST_PTR req){
         
         /* unlock */
         if(pthread_mutex_unlock(&mutex) != 0)
-            perror("unlock failed");
+            perror("unlock failed in process_register_request()");
         
-        /* set response */
+        /* set successful response status */
         response.status = 0;
     }
     /* write response to the client */
     if((status = write(tmp_fifo_fd, &response, sizeof(REGISTER_RESPONSE))) == -1){
-        printf("Could not write into %s in process_register_request\n", tmp_pipename);
-        perror(tmp_pipename);
+        printf("Could not write register response into tmp FIFO of client %d in process_register_request()\n", req->pid);
+        perror("register response");
     }
     else{
-        printf("Register response has been written into %s\n", tmp_pipename);
+        printf("Register response has been written into tmp FIFO of client %d\n", req->pid);
     }
     close(tmp_fifo_fd);
-}
-
-void *check_login_request(void *arg)
-{
-    process_login_request((LOGIN_REQUEST_PTR)arg);	
-    return NULL;
-}
-
-void *check_register_request(void *arg)
-{
-    process_register_request((REGISTER_REQUEST_PTR)arg);
-    return NULL;
-}
-
-void *check_sendmsg_request(void *arg)
-{
-    process_sendmsg_request((SEND_MESSAGE_REQUEST_PTR)arg);	
-    return NULL;
+    pthread_exit(NULL);
 }
 
 int main(){
 	int res_register, res_login, res_message; 
-	int i;
-	int fifo_fd, fd1;
-    int status;
-    
-	char buffer[100];
 	
 	//init_daemon(); /* 设置自身为守护进程 */ 
 	server_conf = get_config(CONF_FILENAME);
@@ -597,10 +627,11 @@ int main(){
 	create_public_fifo();
 	open_public_fifo();
     
+    printf("I am process %d.\n", getpid());
 	printf("Server is now running!\n");
     
     struct pollfd *pollfds = (struct pollfd *)malloc(PUBLIC_FIFO_NUM * sizeof(struct pollfd));
-	for(i=0; i<PUBLIC_FIFO_NUM; i++){
+	for(int i=0; i<PUBLIC_FIFO_NUM; i++){
 		pollfds[i].fd = public_fifo_fd[i];
 		pollfds[i].events = POLLIN|POLLPRI;
 	}
@@ -617,22 +648,22 @@ int main(){
 				printf("time out\n");
 				break;
 			default:
-				for(i=0; i<PUBLIC_FIFO_NUM; i++){
-					if(pollfds[i].revents & POLLIN == POLLIN){
+				for(int i=0; i<PUBLIC_FIFO_NUM; i++){
+					if(pollfds[i].revents & POLLIN){
 						switch(i){
 							case IDX_REGISTER:
 								res_register = read(public_fifo_fd[IDX_REGISTER], &register_info, sizeof(REGISTER_REQUEST));
-                                pthread_create(&threadId_register, NULL, &check_register_request, &register_info);
+                                pthread_create(&threadId_register, NULL, &process_register_request, &register_info);
                                 pthread_join(threadId_register, NULL);
 								break;
 							case IDX_LOGIN:
 								res_login = read(public_fifo_fd[IDX_LOGIN], &login_info, sizeof(LOGIN_REQUEST));
-								pthread_create(&threadId_login, NULL, &check_login_request, &login_info);
+								pthread_create(&threadId_login, NULL, &process_login_request, &login_info);
                                 pthread_join(threadId_login, NULL);
 								break;
 							case IDX_MESSAGE:
 								res_message = read(public_fifo_fd[IDX_MESSAGE], &message_info, sizeof(SEND_MESSAGE_REQUEST));
-                                pthread_create(&threadId_sendmsg, NULL, &check_sendmsg_request, &message_info);
+                                pthread_create(&threadId_sendmsg, NULL, &process_sendmsg_request, &message_info);
                                 pthread_join(threadId_sendmsg, NULL);
                                 break;
 						}

@@ -17,6 +17,9 @@
 
 #define TYPE_LOGIN 0
 #define TYPE_LOGOUT 1
+#define TYPE_ONLINE_USER_INFO 2
+
+#define POLLFDS_NUM 3
 
 typedef struct {
 	char username[USERNAME_MAXLENGTH];
@@ -49,4 +52,11 @@ typedef struct {
 	char message[MESSAGE_MAXLENGTH];
     pid_t pid;
 } SEND_MESSAGE_REQUEST, *SEND_MESSAGE_REQUEST_PTR;
+
+typedef struct {
+    int type;               /* preserved for future feature */
+    int online_user_num;
+	//char **username_list;
+    char username_list[50][USERNAME_MAXLENGTH];
+} STATE_UPDATE_NOTICE, *STATE_UPDATE_NOTICE_PTR;
 #endif
