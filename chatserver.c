@@ -65,6 +65,7 @@ int get_dst_user_fifo(char* dst_username, char* dst_user_fifo);
 int open_dst_user_fifo(char* dst_user_fifo);
 int get_dst_session_id(char* dst_username);
 int get_dst_client_pid(char* dst_username);
+
 void *process_login_request(void *arg);
 void *process_register_request(void *arg);
 void *process_sendmsg_request(void *arg);
@@ -258,7 +259,7 @@ int set_dst_user_login_status(char* dst_username, int status)
     get user's FIFO path
     @param  dst_username    the name of user
     @param  dst_user_fifo   the path of user's FIFO
-    @return                 file descriptor of dst_user_fifo
+    @return                 0 on success, -1 on fail
 */
 int get_dst_user_fifo(char* dst_username, char* dst_user_fifo){
 	int user_id = get_dst_user_id(dst_username);
@@ -278,8 +279,8 @@ int open_dst_user_fifo(char* dst_user_fifo)
 {
     int fd = open(dst_user_fifo, O_WRONLY);
     if(fd == -1){
-        printf("Could not open client FIFO %s for write access in open_dst_user_fifo()\n", dst_user_fifo);
-        perror(dst_user_fifo);
+        printf("Could not open client FIFO %s for write access in %s()\n", dst_user_fifo, __func__);
+        perror("open");
     }
     return fd;
 }
@@ -347,9 +348,13 @@ void *process_sendmsg_request(void *arg){
     else if( dst_user_login_status == 1 ){ /* user has logged in */
         /* open dst user FIFO */
         char dst_user_fifo[FIFO_NAME_MAXLENGTH];
-        get_dst_user_fifo(req->dst_username, dst_user_fifo);
+        if(get_dst_user_fifo(req->dst_username, dst_user_fifo) == -1){
+            printf("%s failed\n", __func__);
+            perror(__func__);
+            return NULL;
+        }
         int fd = open_dst_user_fifo(dst_user_fifo);
-        
+        printf("%s\n", dst_user_fifo);
         /* write message content into dst user FIFO */
         int status = write(fd, req, sizeof(SEND_MESSAGE_REQUEST));
         if(status == -1){
@@ -363,6 +368,7 @@ void *process_sendmsg_request(void *arg){
         return NULL;
     }
 }
+
 
 void *process_login_request(void *arg){
     LOGIN_REQUEST_PTR req = (LOGIN_REQUEST_PTR)arg;

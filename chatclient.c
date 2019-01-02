@@ -122,7 +122,7 @@ int register_user(){
     char new_user_pipename[FIFO_NAME_MAXLENGTH];
     
     read_username_password(&my_username, &password);
-	
+	sprintf(new_user_pipename, "/home/zouyufan_2016200087/chatapp/data/chat_client_%s_fifo", my_username);
 	REGISTER_REQUEST req;
 	
 	/* construct register request */
@@ -215,6 +215,10 @@ int login(){
 					return 0;
 					break;
 				}
+                else if(response.status == -1){
+                    printf(RED("Login failed: user does not exist or wrong password.\n"));
+					return -1;
+                }
                 else if(response.status == -2){ /* reached max online user number limit */
                     printf(RED("Login failed: online user number has reached the limit. Please try again later.\n"));
 					return -1;
