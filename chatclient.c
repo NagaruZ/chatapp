@@ -178,6 +178,7 @@ int login(){
 	/* write login request to server fifo */
 	if(write(public_fifo_fd[IDX_LOGIN], &req, sizeof(LOGIN_REQUEST)) == -1){
 		printf(RED("Send login request to public FIFO %s failed\n"), public_fifo_name[IDX_LOGIN]);
+        return -1;
 	}
 	else{
 		/* get result from server through client's tmp FIFO */
@@ -249,6 +250,7 @@ int logout()
     /* write logout request to public FIFO */
     if(write(public_fifo_fd[IDX_LOGIN], &req, sizeof(LOGIN_REQUEST)) == -1){
 		printf(RED("Send logout request to public FIFO %s failed\n"), public_fifo_name[IDX_LOGIN]);
+        return -1;
 	}
 	else{
         /* read logout response from server through client's tmp FIFO */
@@ -264,6 +266,7 @@ int logout()
             }
         }
         printf("Logout failed.\n");
+        return -1;
     }
 }
 
